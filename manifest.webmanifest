@@ -1,0 +1,26 @@
+{
+  "id": "./",
+  "name": "WBNHS - BSP | Template",
+  "short_name": "WBNHS BSP",
+  "description": "WBNHS\u2013BSP photo template compositor",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#2A0D14",
+  "theme_color": "#2A0D14",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
