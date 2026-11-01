@@ -141,3 +141,31 @@ window.addEventListener("beforeunload",()=>{if(db)saveWorkspace()});
 loadApp().then(wire).catch(e=>{console.error(e);$("#splash").innerHTML="<h2>Unable to open application storage</h2><p>Please use a modern browser with IndexedDB enabled.</p>"});
 if("serviceWorker"in navigator&&location.protocol!=="file:")window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(console.warn));
 })();
+
+
+const OFFICIAL_TEMPLATES = {
+  landscape: "./landscape.png",
+  portrait: "./portrait.png"
+};
+
+const templateCache = {};
+
+async function preloadOfficialTemplates() {
+  for (const [orientation, src] of Object.entries(OFFICIAL_TEMPLATES)) {
+    const img = new Image();
+
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = src;
+    });
+
+    templateCache[orientation] = img;
+  }
+}
+
+function getOfficialTemplate(width, height) {
+  return width > height
+    ? templateCache.landscape
+    : templateCache.portrait;
+}
