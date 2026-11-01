@@ -1,6 +1,8 @@
 (()=>{"use strict";
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const DB_NAME="wbnhs-bsp-template",DB_VERSION=1,MAX_PHOTOS=100;
+const OFFICIAL_PROFILE_ID="wbnhs-bsp-official-default";
+const OFFICIAL_TEMPLATE_PATHS={landscape:"./landscape.png",portrait:"./portrait.png"};
 let db,profiles=[],photos=[],activeProfileId=null,editingProfile=null,profileIsNew=false,editingSlot=null,editorPhotoId=null,editorDraft=null,editorStart=null,history=[],historyIndex=-1,bulkIds=[],exportQueue=[],exportCancelled=false,toastTimer;
 const defaults={format:"png",quality:1,prefix:"WBNHS",suffix:"BSP",separator:"_",start:1,padding:3,includeOriginal:"no"};
 let exportPrefs={...defaults};
@@ -41,13 +43,73 @@ async function decode(blob){
     img.src=url;
   });
 }
+async function ensureOfficialProfile(){
+  const existing=await req(tx("profiles").get(OFFICIAL_PROFILE_ID));
+  if(existing)return existing;
+  async function loadBundledPNG(path,label){
+    const response=await fetch(path,{cache:"no-cache"});
+    if(!response.ok)throw new Error(`Could not load the built-in ${label} template (${response.status}). Make sure ${path} is in the repository root.`);
+    const blob=await response.blob();
+    const signature=new Uint8Array(await blob.slice(0,8).arrayBuffer());
+    const pngSignature=[137,80,78,71,13,10,26,10];
+    if(!pngSignature.every((value,index)=>value===signature[index])){
+      throw new Error(`The built-in ${label} template is not a valid PNG: ${path}`);
+    }
+    const bitmap=await decode(blob);
+    const template={blob,width:bitmap.width,height:bitmap.height};
+    bitmap.close?.();
+    return template;
+  }
+  const [landscape,portrait]=await Promise.all([
+    loadBundledPNG(OFFICIAL_TEMPLATE_PATHS.landscape,"landscape"),
+    loadBundledPNG(OFFICIAL_TEMPLATE_PATHS.portrait,"portrait")
+  ]);
+  const profile={
+    id:OFFICIAL_PROFILE_ID,
+    name:"WBNHS – BSP Official Template",
+    created:Date.now(),
+    modified:Date.now(),
+    landscape,
+    portrait,
+    builtIn:true
+  };
+  await put("profiles",profile);
+  return profile;
+}
 async function savePhoto(p){p.updated=Date.now();await put("photos",p)}
 async function saveWorkspace(){await setMeta("workspace",{ids:photos.map(p=>p.id),order:photos.map(p=>p.id),savedAt:Date.now()})}
-function render(){const grid=$("#photoGrid");grid.innerHTML="";grid.classList.toggle("list",$("#viewMode").value==="list");photos.forEach(p=>{const card=document.createElement("article");card.className="photo-card"+(p.selected?" selected":"");const img=document.createElement("img");img.alt="";img.src=p.thumb||"";const thumb=document.createElement("div");thumb.className="photo-thumb";if(p.thumb)thumb.append(img);else thumb.innerHTML='<span class="broken">Preview unavailable</span>';const check=document.createElement("input");check.type="checkbox";check.className="photo-check";check.checked=!!p.selected;check.setAttribute("aria-label","Select "+p.name);check.onchange=()=>{p.selected=check.checked;savePhoto(p);render()};thumb.append(check);
-const info=document.createElement("div");info.className="photo-info";const name=document.createElement("div");name.className="photo-name";name.textContent=p.name;const meta=document.createElement("div");meta.className="photo-meta";meta.textContent=`${p.orientation} · ${profileById(p.profileId)?.name||"Missing profile"} · ${p.applied?"Applied":"Unedited"}`;info.append(name,meta);
-const actions=document.createElement("div");actions.className="photo-actions";[["Edit",()=>openEditor(p.id)],["Rename",()=>renamePhoto(p)],["Export",()=>beginExport([p.id])],["Remove",()=>removePhoto(p.id)]].forEach(([label,fn])=>{const b=document.createElement("button");b.className="btn compact";b.textContent=label;b.onclick=fn;actions.append(b)});card.append(thumb,info,actions);grid.append(card)});
-$("#emptyState").classList.toggle("hidden",photos.length>0);grid.classList.toggle("hidden",photos.length===0);$("#selectionTools").classList.toggle("hidden",photos.length===0);$("#totalCount").textContent=photos.length;$("#readyCount").textContent=photos.filter(p=>p.applied&&templateFor(p)).length;$("#pendingCount").textContent=photos.filter(p=>!p.applied).length;$("#failedCount").textContent=photos.filter(p=>p.failed).length;$("#selectedCount").textContent=selected().length;$("#selectedActionCount").textContent=selected().length;$("#activeProfileLabel").textContent=profileById(activeProfileId)?.name||"No profile selected";$("#workspaceHint").textContent=photos.length?`${photos.length} item${photos.length===1?"":"s"} · ${selected().length} selected`:"Import images to begin.";$("#exportSelectedBtn").disabled=!selected().length}
-function renderProfiles(){const list=$("#profileList");list.innerHTML="";profiles.forEach(p=>{const row=document.createElement("div");row.className="profile-item"+(p.id===activeProfileId?" active":"");const info=document.createElement("div");info.innerHTML=`<strong></strong><small></small>`;info.querySelector("strong").textContent=p.name;info.querySelector("small").textContent=`Landscape: ${p.landscape?`${p.landscape.width}×${p.landscape.height}`:"missing"} · Portrait: ${p.portrait?`${p.portrait.width}×${p.portrait.height}`:"missing"}`;const actions=document.createElement("div");actions.className="profile-actions";const edit=document.createElement("button");edit.className="btn compact";edit.textContent="Edit";edit.onclick=()=>editProfile(p.id);const activate=document.createElement("button");activate.className="btn compact";activate.textContent=p.id===activeProfileId?"Active":"Use";activate.onclick=()=>switchProfile(p.id);const remove=document.createElement("button");remove.className="text-btn danger-text";remove.textContent="Delete";remove.onclick=()=>deleteProfile(p.id);actions.append(edit,activate,remove);row.append(info,actions);list.append(row)});$("#profileSource").innerHTML='<option value="empty">Empty profile</option>'+profiles.map(p=>`<option value="${p.id}">${escapeHTML(p.name)}</option>`).join("")}
+function render(){
+const grid=$("#photoGrid");grid.innerHTML="";grid.classList.toggle("list",$("#viewMode").value==="list");
+photos.forEach(p=>{
+const card=document.createElement("article");card.className="photo-card"+(p.selected?" selected":"");
+const img=document.createElement("img");img.alt="";img.src=p.thumb||"";
+const thumb=document.createElement("div");thumb.className="photo-thumb";
+if(p.thumb)thumb.append(img);else thumb.innerHTML='<span class="broken">Preview unavailable</span>';
+const check=document.createElement("input");check.type="checkbox";check.className="photo-check";check.checked=!!p.selected;check.setAttribute("aria-label","Select "+p.name);check.onchange=()=>{p.selected=check.checked;savePhoto(p);render()};thumb.append(check);
+const info=document.createElement("div");info.className="photo-info";
+const name=document.createElement("div");name.className="photo-name";name.textContent=p.name;
+const meta=document.createElement("div");meta.className="photo-meta";meta.textContent=`${p.orientation} · ${profileById(p.profileId)?.name||"Missing profile"} · ${p.applied?"Applied":"Unedited"}`;info.append(name,meta);
+const actions=document.createElement("div");actions.className="photo-actions";
+[["Edit",()=>openEditor(p.id)],["Rename",()=>renamePhoto(p)],["Export",()=>beginExport([p.id])],["Remove",()=>removePhoto(p.id)]].forEach(([label,fn])=>{const b=document.createElement("button");b.className="btn compact";b.textContent=label;b.onclick=fn;actions.append(b)});
+card.append(thumb,info,actions);grid.append(card)});
+$("#emptyState").classList.toggle("hidden",photos.length>0);grid.classList.toggle("hidden",photos.length===0);$("#selectionTools").classList.toggle("hidden",photos.length===0);
+$("#totalCount").textContent=photos.length;$("#readyCount").textContent=photos.filter(p=>p.applied&&templateFor(p)).length;$("#pendingCount").textContent=photos.filter(p=>!p.applied).length;$("#failedCount").textContent=photos.filter(p=>p.failed).length;$("#selectedCount").textContent=selected().length;$("#selectedActionCount").textContent=selected().length;$("#activeProfileLabel").textContent=profileById(activeProfileId)?.name||"No profile selected";$("#workspaceHint").textContent=photos.length?`${photos.length} item${photos.length===1?"":"s"} · ${selected().length} selected`:"Import images to begin.";$("#exportSelectedBtn").disabled=!selected().length
+}
+function renderProfiles(){
+const list=$("#profileList");list.innerHTML="";
+profiles.forEach(p=>{
+const row=document.createElement("div");row.className="profile-item"+(p.id===activeProfileId?" active":"");
+const info=document.createElement("div");info.innerHTML=`<strong></strong><small></small>`;
+info.querySelector("strong").textContent=p.name;
+info.querySelector("small").textContent=`Landscape: ${p.landscape?`${p.landscape.width}×${p.landscape.height}`:"missing"} · Portrait: ${p.portrait?`${p.portrait.width}×${p.portrait.height}`:"missing"}`;
+const actions=document.createElement("div");actions.className="profile-actions";
+const edit=document.createElement("button");edit.className="btn compact";edit.textContent="Edit";edit.onclick=()=>editProfile(p.id);
+const activate=document.createElement("button");activate.className="btn compact";activate.textContent=p.id===activeProfileId?"Active":"Use";activate.onclick=()=>switchProfile(p.id);
+const remove=document.createElement("button");remove.className="text-btn danger-text";remove.textContent="Delete";remove.onclick=()=>deleteProfile(p.id);
+if(p.id===OFFICIAL_PROFILE_ID){remove.disabled=true;remove.title="Built-in official profile cannot be deleted";}
+actions.append(edit,activate,remove);row.append(info,actions);list.append(row)});
+$("#profileSource").innerHTML='<option value="empty">Empty profile</option>'+profiles.map(p=>`<option value="${p.id}">${escapeHTML(p.name)}</option>`).join("")
+}
 function escapeHTML(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function openSettings(tab="profiles"){$("#settingsBackdrop").classList.remove("hidden");switchTab(tab);renderProfiles();storageInfo()}
 function switchTab(name){$$(".tab").forEach(b=>b.classList.toggle("active",b.dataset.tab===name));$$(".tab-panel").forEach(p=>p.classList.toggle("hidden",p.id!=="tab-"+name))}
@@ -57,11 +119,35 @@ async function editProfile(id){const p=profileById(id);profileIsNew=false;editin
 async function showTemplateSlot(slot){const p=editingProfile;const t=p?.[slot];const img=$("#"+slot+"Preview"),meta=$("#"+slot+"Meta");if(t){img.src=await dataURL(t.blob);meta.textContent=`${t.width} × ${t.height}px`;}else{img.removeAttribute("src");meta.textContent="Not uploaded"}}
 async function saveProfileEditor(){const name=$("#profileName").value.trim();if(!name)return toast("Enter a profile name.");if(!editingProfile)return toast("Profile editor is not initialized. Close it and create the profile again.");const p=clone(editingProfile);p.name=name;p.modified=Date.now();await put("profiles",p);profiles=await all("profiles");if(!activeProfileId)activeProfileId=p.id;activeProfileId=activeProfileId||p.id;await setMeta("activeProfileId",activeProfileId);profileEditorReset();renderProfiles();render();toast("Template profile saved.")}
 async function switchProfile(id){if(photos.some(p=>!p.applied)&&!confirm("Some photographs have unfinished edits. Switch the active profile? Existing photographs will keep their assigned profile."))return;activeProfileId=id;await setMeta("activeProfileId",id);render();renderProfiles();toast("Active profile changed. New imports will use this profile.")}
-async function deleteProfile(id){const assigned=photos.filter(p=>p.profileId===id);const others=profiles.filter(p=>p.id!==id);if(!others.length&&assigned.length)return toast("Create another profile before deleting the only profile assigned to photographs.");let reassignment=null;if(assigned.length){const choices=others.map(p=>p.name).join(", ");const target=prompt(`${assigned.length} photograph(s) use this profile. Enter the exact replacement profile name (${choices}):`,others[0].name);if(target===null)return;reassignment=others.find(p=>p.name.toLowerCase()===target.trim().toLowerCase());if(!reassignment)return toast("No matching profile. Nothing was deleted.");}
-if(!confirm(`Delete profile "${profileById(id).name}"? This cannot be undone.`))return;for(const p of assigned){p.profileId=reassignment.id;const t=reassignment[p.orientation];p.applied=!!t;await savePhoto(p)}await del("profiles",id);profiles=await all("profiles");if(activeProfileId===id){activeProfileId=profiles[0]?.id||null;await setMeta("activeProfileId",activeProfileId)}renderProfiles();render();toast("Profile deleted.")}
+async function deleteProfile(id){
+if(id===OFFICIAL_PROFILE_ID)return toast("The built-in official template profile cannot be deleted.");
+const assigned=photos.filter(p=>p.profileId===id);const others=profiles.filter(p=>p.id!==id);
+if(!others.length&&assigned.length)return toast("Create another profile before deleting the only profile assigned to photographs.");
+let reassignment=null;
+if(assigned.length){const choices=others.map(p=>p.name).join(", ");const target=prompt(`${assigned.length} photograph(s) use this profile. Enter the exact replacement profile name (${choices}):`,others[0].name);if(target===null)return;reassignment=others.find(p=>p.name.toLowerCase()===target.trim().toLowerCase());if(!reassignment)return toast("No matching profile. Nothing was deleted.");}
+if(!confirm(`Delete profile "${profileById(id).name}"? This cannot be undone.`))return;
+for(const p of assigned){p.profileId=reassignment.id;const t=reassignment[p.orientation];p.applied=!!t;await savePhoto(p)}
+await del("profiles",id);profiles=await all("profiles");
+if(activeProfileId===id){activeProfileId=profiles[0]?.id||null;await setMeta("activeProfileId",activeProfileId)}
+renderProfiles();render();toast("Profile deleted.")
+}
 async function validatePNG(file){if(file.type!=="image/png")throw Error("Only PNG template files are accepted.");const buf=await file.slice(0,8).arrayBuffer(),sig=[137,80,78,71,13,10,26,10];if(!sig.every((v,i)=>new Uint8Array(buf)[i]===v))throw Error("The selected file is not a valid PNG.");const bmp=await decode(file);if(!bmp.width||!bmp.height)throw Error("PNG has invalid dimensions.");return{blob:file,width:bmp.width,height:bmp.height}}
 async function importTemplate(file,slot){try{if(!editingProfile)throw Error("Create or open a template profile before uploading a PNG.");const t=await validatePNG(file);editingProfile[slot]=t;await showTemplateSlot(slot);toast(`${slot} template loaded.`)}catch(e){toast(e.message)}}
-async function importPhotos(files){const prof=profileById(activeProfileId);if(!prof)return toast("Create a template profile first.");if(!prof.landscape||!prof.portrait){openSettings();toast("Upload both landscape and portrait templates before importing.");return}const remaining=MAX_PHOTOS-photos.length;if(remaining<=0)return toast("Workspace limit reached (100 photographs).");let imported=0,failed=0;for(const file of [...files].slice(0,remaining)){try{if(!/^image\/(jpeg|png|webp)$/.test(file.type))throw Error("Unsupported image type.");const bmp=await decode(file);if(!bmp.width||!bmp.height)throw Error("Image has invalid dimensions.");const o=orientation(bmp.width,bmp.height),p={id:uid(),name:file.name,originalName:file.name,blob:file,width:bmp.width,height:bmp.height,orientation:o,profileId:activeProfileId,applied:true,settings:settings(),draft:null,selected:false,order:photos.length,created:Date.now()};const thumbCanvas=document.createElement("canvas");const scale=Math.min(260/bmp.width,180/bmp.height,1);thumbCanvas.width=Math.max(1,Math.round(bmp.width*scale));thumbCanvas.height=Math.max(1,Math.round(bmp.height*scale));thumbCanvas.getContext("2d").drawImage(bmp,0,0,thumbCanvas.width,thumbCanvas.height);p.thumb=thumbCanvas.toDataURL("image/jpeg",.72);bmp.close?.();await put("photos",p);photos.push(p);imported++;}catch(e){failed++;console.warn("Import failed",file.name,e)}}await saveWorkspace();render();toast(`${imported} imported${failed?`; ${failed} failed`:""}.`);if(files.length>remaining)toast(`Workspace capacity: ${MAX_PHOTOS}. Imported first ${remaining} files.`)}
+async function importPhotos(files){
+const prof=profileById(activeProfileId);if(!prof)return toast("Create a template profile first.");
+if(!prof.landscape||!prof.portrait){openSettings();toast("Upload both landscape and portrait templates before importing.");return}
+const remaining=MAX_PHOTOS-photos.length;if(remaining<=0)return toast("Workspace limit reached (100 photographs).");
+let imported=0,failed=0;
+for(const file of [...files].slice(0,remaining)){
+try{
+if(!/^image\/(jpeg|png|webp)$/.test(file.type))throw Error("Unsupported image type.");
+const bmp=await decode(file);if(!bmp.width||!bmp.height)throw Error("Image has invalid dimensions.");
+const o=orientation(bmp.width,bmp.height),p={id:uid(),name:file.name,originalName:file.name,blob:file,width:bmp.width,height:bmp.height,orientation:o,profileId:activeProfileId,applied:true,settings:settings(),draft:null,selected:false,order:photos.length,created:Date.now()};
+const thumbCanvas=document.createElement("canvas");const scale=Math.min(260/bmp.width,180/bmp.height,1);thumbCanvas.width=Math.max(1,Math.round(bmp.width*scale));thumbCanvas.height=Math.max(1,Math.round(bmp.height*scale));thumbCanvas.getContext("2d").drawImage(bmp,0,0,thumbCanvas.width,thumbCanvas.height);p.thumb=thumbCanvas.toDataURL("image/jpeg",.72);bmp.close?.();await put("photos",p);photos.push(p);imported++;
+}catch(e){failed++;console.warn("Import failed",file.name,e)}
+}
+await saveWorkspace();render();toast(`${imported} imported${failed?`; ${failed} failed`:""}.`);if(files.length>remaining)toast(`Workspace capacity: ${MAX_PHOTOS}. Imported first ${remaining} files.`)
+}
 function renamePhoto(p){const n=prompt("New photograph filename:",p.name);if(n===null)return;if(!n.trim())return toast("Filename cannot be empty.");p.name=n.trim();savePhoto(p).then(render)}
 async function removePhoto(id){if(!confirm("Remove this photograph from the workspace?"))return;await del("photos",id);photos=photos.filter(p=>p.id!==id);await saveWorkspace();render()}
 async function removeSelected(){const ids=selected().map(p=>p.id);if(!ids.length)return;if(!confirm(`Remove ${ids.length} selected photographs?`))return;for(const id of ids)await del("photos",id);photos=photos.filter(p=>!ids.includes(p.id));await saveWorkspace();render()}
@@ -69,103 +155,36 @@ async function clearWorkspace(){if(!confirm("Clear all photographs from this wor
 function selectAction(kind){photos.forEach(p=>p.selected=kind==="all"?true:kind==="none"?false:kind==="invert"?!p.selected:kind==="landscape"?p.orientation==="landscape":p.orientation==="portrait");photos.forEach(savePhoto);render()}
 function canvasTransform(ctx,img,tw,th,s){const base=Math.max(tw/img.width,th/img.height);const scale=base*(s.zoom||1);ctx.save();ctx.translate(tw/2+(s.x||0),th/2+(s.y||0));ctx.rotate((s.rotation||0)*Math.PI/180);ctx.scale(scale,scale);ctx.drawImage(img,-img.width/2,-img.height/2);ctx.restore()}
 async function composite(p,settingsOverride=null,format="png",quality=1){
-  if(!p) throw new Error("The selected photograph is no longer in the workspace.");
-  const t=templateFor(p);
-  if(!t) throw new Error(`Missing ${p.orientation} template for ${p.name}. Open Settings and restore that template.`);
-  if(!t.blob||!p.blob) throw new Error(`Image data is missing for ${p.name}. Re-import the photograph or template.`);
-  let photoImg=null,templateImg=null,c=null;
-  try{
-    [photoImg,templateImg]=await Promise.all([decode(p.blob),decode(t.blob)]);
-    const width=Number(t.width)||templateImg.width||templateImg.naturalWidth;
-    const height=Number(t.height)||templateImg.height||templateImg.naturalHeight;
-    if(!width||!height) throw new Error(`The template dimensions are invalid for ${p.name}. Re-upload its PNG template.`);
-    c=document.createElement("canvas");c.width=width;c.height=height;
-    const ctx=c.getContext("2d",{alpha:format!=="jpeg"});
-    if(!ctx) throw new Error("This browser could not create a canvas for the selected template size.");
-    if(format==="jpeg"){ctx.fillStyle="#fff";ctx.fillRect(0,0,width,height);}
-    canvasTransform(ctx,photoImg,width,height,settingsOverride||p.settings||settings());
-    ctx.drawImage(templateImg,0,0,width,height);
-    const blob=await new Promise((resolve,reject)=>{
-      try{c.toBlob(result=>result?resolve(result):reject(new Error(`The browser could not encode the ${width}×${height} composition. Try a smaller template or export PNG.`)),format==="jpeg"?"image/jpeg":"image/png",quality);}
-      catch(err){reject(new Error("Canvas encoding failed: "+(err?.message||String(err))));}
-    });
-    if(!blob||!blob.size) throw new Error("The browser generated an empty image file.");
-    return blob;
-  }catch(err){
-    console.error("Composition failed",{photo:p?.name,orientation:p?.orientation,templateWidth:t?.width,templateHeight:t?.height,error:err});
-    throw new Error(err?.message||String(err)||"Unknown image composition error");
-  }finally{
-    photoImg?.close?.();templateImg?.close?.();
-    if(c){c.width=1;c.height=1;}
-  }
+if(!p)throw new Error("The selected photograph is no longer in the workspace.");
+const t=templateFor(p);
+if(!t)throw new Error(`Missing ${p.orientation} template for ${p.name}. Open Settings and restore that template.`);
+if(!t.blob||!p.blob)throw new Error(`Image data is missing for ${p.name}. Re-import the photograph or template.`);
+let photoImg=null,templateImg=null,c=null;
+try{
+[photoImg,templateImg]=await Promise.all([decode(p.blob),decode(t.blob)]);
+const width=Number(t.width)||templateImg.width||templateImg.naturalWidth;
+const height=Number(t.height)||templateImg.height||templateImg.naturalHeight;
+if(!width||!height)throw new Error(`The template dimensions are invalid for ${p.name}. Re-upload its PNG template.`);
+c=document.createElement("canvas");c.width=width;c.height=height;
+const ctx=c.getContext("2d",{alpha:format!=="jpeg"});
+if(!ctx)throw new Error("This browser could not create a canvas for the selected template size.");
+if(format==="jpeg"){ctx.fillStyle="#fff";ctx.fillRect(0,0,width,height);}
+canvasTransform(ctx,photoImg,width,height,settingsOverride||p.settings||settings());
+ctx.drawImage(templateImg,0,0,width,height);
+const blob=await new Promise((resolve,reject)=>{
+try{c.toBlob(result=>result?resolve(result):reject(new Error(`The browser could not encode the ${width}×${height} composition. Try a smaller template or export PNG.`)),format==="jpeg"?"image/jpeg":"image/png",quality);}
+catch(err){reject(new Error("Canvas encoding failed: "+(err?.message||String(err))));}
+});
+if(!blob||!blob.size)throw new Error("The browser generated an empty image file.");
+return blob;
+}catch(err){
+console.error("Composition failed",{photo:p?.name,orientation:p?.orientation,templateWidth:t?.width,templateHeight:t?.height,error:err});
+throw new Error(err?.message||String(err)||"Unknown image composition error");
+}finally{
+photoImg?.close?.();templateImg?.close?.();
+if(c){c.width=1;c.height=1;}
+}
 }
 async function openEditor(id){const p=photoById(id);if(!p)return;editorPhotoId=id;editorStart=clone(p.settings);editorDraft=clone(p.draft||p.settings);history=[clone(editorDraft)];historyIndex=0;$("#editorTitle").textContent=p.name;$("#editorProfileNote").textContent=`${p.orientation} · ${profileById(p.profileId)?.name||"Missing profile"} · Template remains fixed`;$("#editorModal").classList.remove("hidden");await renderEditor();syncControls()}
 async function renderEditor(){const p=photoById(editorPhotoId),t=templateFor(p);if(!p||!t)return;const canvas=$("#editorCanvas"),maxW=$("#editorCanvas").parentElement.clientWidth-24,maxH=Math.min(window.innerHeight*.55,520);const ratio=Math.min(maxW/t.width,maxH/t.height,1);canvas.width=Math.max(1,Math.round(t.width*ratio));canvas.height=Math.max(1,Math.round(t.height*ratio));const [pi,ti]=await Promise.all([decode(p.blob),decode(t.blob)]);const ctx=canvas.getContext("2d");ctx.clearRect(0,0,canvas.width,canvas.height);canvasTransform(ctx,pi,canvas.width,canvas.height,editorDraft);ctx.drawImage(ti,0,0,canvas.width,canvas.height);pi.close?.();ti.close?.()}
-function syncControls(){const s=editorDraft;$("#zoomControl").value=s.zoom;$("#xControl").value=s.x;$("#yControl").value=s.y;$("#rotationControl").value=s.rotation;$("#zoomOutput").textContent=s.zoom.toFixed(2)+"×";$("#xOutput").textContent=Math.round(s.x);$("#yOutput").textContent=Math.round(s.y);$("#rotationOutput").textContent=Math.round(s.rotation)+"°"}
-let renderToken=0;function changed(){const s=editorDraft;syncControls();const token=++renderToken;renderEditor().catch(e=>toast(e.message));const p=photoById(editorPhotoId);p.draft=clone(s);clearTimeout(changed.timer);changed.timer=setTimeout(()=>savePhoto(p),350)}
-function pushHistory(){history=history.slice(0,historyIndex+1);history.push(clone(editorDraft));if(history.length>30)history.shift();historyIndex=history.length-1}
-function updateEditorFromControl(){editorDraft={zoom:+$("#zoomControl").value,x:+$("#xControl").value,y:+$("#yControl").value,rotation:+$("#rotationControl").value};pushHistory();changed()}
-function autoFit(s){return{...s,zoom:1,x:0,y:0}}
-function closeEditor(){const p=photoById(editorPhotoId);if(p){p.draft=null;savePhoto(p)}$("#editorModal").classList.add("hidden");editorPhotoId=null;render()}
-async function applyEditor(){const p=photoById(editorPhotoId);p.settings=clone(editorDraft);p.draft=null;p.applied=true;await savePhoto(p);$("#editorModal").classList.add("hidden");editorPhotoId=null;render();toast("Adjustments applied.")}
-function cancelEditor(){closeEditor();toast("Unapplied changes discarded.")}
-let pointers=new Map(),dragStart=null,pinchStart=null;
-const ec=$("#editorCanvas");
-ec.addEventListener("pointerdown",e=>{ec.setPointerCapture(e.pointerId);pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pointers.size===1)dragStart={x:e.clientX,y:e.clientY,px:editorDraft.x,py:editorDraft.y};if(pointers.size===2){const a=[...pointers.values()];pinchStart={distance:Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y),zoom:editorDraft.zoom}}});
-ec.addEventListener("pointermove",e=>{if(!pointers.has(e.pointerId))return;pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pointers.size===1&&dragStart){const r=ec.getBoundingClientRect();const sx=photoById(editorPhotoId);const t=templateFor(sx);const k=t.width/ec.width;editorDraft.x=dragStart.px+(e.clientX-dragStart.x)*k;editorDraft.y=dragStart.py+(e.clientY-dragStart.y)*k;changed()}else if(pointers.size===2&&pinchStart){const a=[...pointers.values()];const d=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y);editorDraft.zoom=Math.max(.1,Math.min(5,pinchStart.zoom*d/pinchStart.distance));changed()}});
-["pointerup","pointercancel","lostpointercapture"].forEach(ev=>ec.addEventListener(ev,e=>{pointers.delete(e.pointerId);if(!pointers.size){dragStart=null;pinchStart=null;pushHistory()}}));
-ec.addEventListener("wheel",e=>{e.preventDefault();editorDraft.zoom=Math.max(.1,Math.min(5,editorDraft.zoom*(e.deltaY<0?1.06:.94)));pushHistory();changed()},{passive:false});
-function rotate(deg){editorDraft.rotation=Math.max(-180,Math.min(180,editorDraft.rotation+deg));pushHistory();changed()}
-function undoRedo(dir){const next=historyIndex+dir;if(next<0||next>=history.length)return;historyIndex=next;editorDraft=clone(history[historyIndex]);changed()}
-function openBulk(){bulkIds=selected().map(p=>p.id);if(bulkIds.length<2)return toast("Select at least two photographs for bulk editing.");$("#bulkCount").textContent=`${bulkIds.length} selected photographs · preview changes are applied only after confirmation.`;["bulkZoom","bulkX","bulkY","bulkRotation"].forEach(id=>$("#"+id).value=0);$("#bulkModal").classList.remove("hidden")}
-async function applyBulk(){const mode=$("#bulkMode").value,z=+$("#bulkZoom").value,x=+$("#bulkX").value,y=+$("#bulkY").value,r=+$("#bulkRotation").value;for(const id of bulkIds){const p=photoById(id);if(!p)continue;const s=clone(p.settings);if(mode==="relative"){s.zoom=Math.max(.1,Math.min(5,s.zoom+z));s.x+=x;s.y+=y;s.rotation=Math.max(-180,Math.min(180,s.rotation+r))}else{s.zoom=Math.max(.1,Math.min(5,z||1));s.x=x;s.y=y;s.rotation=r}p.settings=s;p.applied=true;p.draft=null;await savePhoto(p)}$("#bulkModal").classList.add("hidden");render();toast(`Updated ${bulkIds.length} photographs.`)}
-function makeFilename(p,index,format,used){const pad=String(exportPrefs.start+index).padStart(exportPrefs.padding,"0"),parts=[];if(exportPrefs.prefix)parts.push(exportPrefs.prefix);parts.push(pad);if(exportPrefs.includeOriginal==="yes")parts.push(p.name.replace(/\.[^.]+$/,"").replace(/[^\w-]+/g,"_"));if(exportPrefs.suffix)parts.push(exportPrefs.suffix);let base=parts.join(exportPrefs.separator||"_").replace(/[\\/:*?"<>|]/g,"_");let ext=format==="jpeg"?"jpg":"png",name=base+"."+ext,n=2;while(used.has(name.toLowerCase()))name=base+"_"+n+++"."+ext;used.add(name.toLowerCase());return name}
-function crc32(data){let c=~0;for(let i=0;i<data.length;i++){c^=data[i];for(let j=0;j<8;j++)c=(c>>>1)^((c&1)?0xedb88320:0)}return(c^~0)>>>0}
-function zipStore(entries){const enc=new TextEncoder(),local=[],central=[];let offset=0;for(const entry of entries){const name=enc.encode(entry.name),data=new Uint8Array(entry.blob),crc=crc32(data),lh=new Uint8Array(30+name.length),lv=new DataView(lh.buffer);lv.setUint32(0,0x04034b50,true);lv.setUint16(4,20,true);lv.setUint16(6,0,true);lv.setUint16(8,0,true);lv.setUint32(14,crc,true);lv.setUint32(18,data.length,true);lv.setUint32(22,data.length,true);lv.setUint16(26,name.length,true);lh.set(name,30);local.push(lh,data);const ch=new Uint8Array(46+name.length),cv=new DataView(ch.buffer);cv.setUint32(0,0x02014b50,true);cv.setUint16(4,20,true);cv.setUint16(6,20,true);cv.setUint16(8,0,true);cv.setUint16(10,0,true);cv.setUint32(16,crc,true);cv.setUint32(20,data.length,true);cv.setUint32(24,data.length,true);cv.setUint16(28,name.length,true);cv.setUint32(42,offset,true);ch.set(name,46);central.push(ch);offset+=lh.length+data.length}
-const centralSize=central.reduce((n,a)=>n+a.length,0),end=new Uint8Array(22),v=new DataView(end.buffer);v.setUint32(0,0x06054b50,true);v.setUint16(8,entries.length,true);v.setUint16(10,entries.length,true);v.setUint32(12,centralSize,true);v.setUint32(16,offset,true);return new Blob([...local,...central,end],{type:"application/zip"})}
-function download(blob,name){const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000)}
-function beginExport(ids){const list=ids.map(photoById).filter(Boolean);if(!list.length)return toast("No photographs to export.");const unapplied=list.filter(p=>p.draft);if(unapplied.length)return toast("Apply or cancel all open photo edits before exporting.");const missing=list.filter(p=>!templateFor(p));if(missing.length)return toast(`${missing.length} photograph(s) have missing templates.`);exportQueue=list.map(p=>p.id);$("#confirmFormat").value=exportPrefs.format;$("#exportSummary").innerHTML=`<b>${list.length}</b> photographs selected<br>${list.filter(p=>p.applied).length} ready · ${list.filter(p=>!p.applied).length} pending<br>Output: ${exportPrefs.format.toUpperCase()} · Full template resolution<br>Delivery: ZIP archive or sequential individual downloads<br>Estimated workload: ${list.length} full-resolution compositions`;$("#exportProgress").classList.add("hidden");$("#exportResults").classList.add("hidden");$("#startExportBtn").classList.remove("hidden");$("#cancelExportDialog").classList.remove("hidden");$("#exportModal").classList.remove("hidden")}
-async function runExport(){const format=$("#confirmFormat").value,delivery=$("#deliveryMode").value,ids=[...exportQueue];exportCancelled=false;$("#exportProgress").classList.remove("hidden");$("#startExportBtn").classList.add("hidden");$("#cancelExportDialog").classList.add("hidden");const entries=[],used=new Set(),results=[];let done=0,failed=0;for(let i=0;i<ids.length;i++){if(exportCancelled)break;const p=photoById(ids[i]);$("#progressText").textContent=`Processing ${i+1} of ${ids.length}: ${p?.name||"photo"}`;try{const blob=await composite(p,null,format,exportPrefs.quality);const name=makeFilename(p,i,format,used);entries.push({name,blob});results.push(`✓ ${name}`);if(delivery==="individual"){download(blob,name);await new Promise(r=>setTimeout(r,350))}done++}catch(e){failed++;results.push(`✕ ${p?.name||ids[i]} — ${e.message}`)}$("#progressBar").style.width=Math.round((i+1)/ids.length*100)+"%";$("#progressText").textContent=`Generated ${done} · Failed ${failed} · Remaining ${ids.length-i-1}`;}
-if(delivery==="zip"&&entries.length&&!exportCancelled){try{const zip=zipStore(entries);download(zip,"WBNHS_BSP_Compositions.zip")}catch(e){failed++;results.push("ZIP creation failed: "+e.message)}}
-$("#exportResults").classList.remove("hidden");$("#exportResults").textContent=`Generated: ${done} · Failed: ${failed} · Skipped: ${ids.length-done-failed}${exportCancelled?" · Pending work cancelled":""}\n\n${results.join("\n")}\n\nFiles were generated and download actions initiated. Browser download completion cannot be independently verified.`;$("#progressText").textContent="Export queue finished.";toast(`Export generated ${done} file(s); ${failed} failed.`)}
-async function storageInfo(){if(!navigator.storage?.estimate)return;const e=await navigator.storage.estimate();const used=e.usage||0,quota=e.quota||1;$("#storageBar").style.width=Math.min(100,used/quota*100)+"%";$("#storageText").textContent=`${(used/1048576).toFixed(1)} MB used of ${(quota/1048576).toFixed(0)} MB estimated browser quota.`}
-function updateFilenamePreview(){const p={name:"Photo.jpg"};$("#filenamePreview").textContent=makeFilename(p,0,$("#exportFormat").value,new Set())}
-async function loadApp(){db=await openDB();profiles=await all("profiles");const a=await getMeta("activeProfileId");activeProfileId=a?.value||profiles[0]?.id||null;const pref=await getMeta("exportPrefs");if(pref?.value)exportPrefs={...defaults,...pref.value};const themeSaved=localStorage.getItem("wb-theme")||"dark";theme(themeSaved);applyExportPrefs();const stored=await getMeta("workspace");if(stored?.value?.ids?.length){$("#recoveryModal").classList.remove("hidden")}else{photos=await all("photos");render()}$("#splash").classList.add("hidden");$("#app").classList.remove("hidden");renderProfiles();render()}
-function applyExportPrefs(){$("#exportFormat").value=exportPrefs.format;$("#jpegQuality").value=exportPrefs.quality;$("#qualityValue").textContent=Math.round(exportPrefs.quality*100)+"%";$("#namePrefix").value=exportPrefs.prefix;$("#nameSuffix").value=exportPrefs.suffix;$("#nameSeparator").value=exportPrefs.separator;$("#nameStart").value=exportPrefs.start;$("#namePadding").value=exportPrefs.padding;$("#includeOriginal").value=exportPrefs.includeOriginal;updateFilenamePreview()}
-async function restoreWorkspace(){photos=await all("photos");photos.sort((a,b)=>(a.order??0)-(b.order??0));$("#recoveryModal").classList.add("hidden");render();toast("Workspace restored.")}
-async function freshWorkspace(){const old=await all("photos");for(const p of old)await del("photos",p.id);photos=[];await saveWorkspace();$("#recoveryModal").classList.add("hidden");render();toast("Started a new workspace. Templates were preserved.")}
-function wire(){ $("#themeBtn").onclick=()=>theme(document.documentElement.dataset.theme==="dark"?"light":"dark");$("#settingsBtn").onclick=()=>openSettings();$("#emptyProfilesBtn").onclick=()=>openSettings();$("#settingsBackdrop").addEventListener("click",e=>{if(e.target.id==="settingsBackdrop")$("#settingsBackdrop").classList.add("hidden")});$$("[data-close]").forEach(b=>b.onclick=()=>$("#"+b.dataset.close).classList.add("hidden"));$$(".tab").forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));$("#newProfileBtn").onclick=newProfile;$("#closeProfileEditor").onclick=profileEditorReset;$("#cancelProfileBtn").onclick=profileEditorReset;$("#saveProfileBtn").onclick=saveProfileEditor;$("#profileSource").onchange=async()=>{if(!profileIsNew||!editingProfile)return;const source=profileById($("#profileSource").value);editingProfile.landscape=source?.landscape?clone(source.landscape):null;editingProfile.portrait=source?.portrait?clone(source.portrait):null;await showTemplateSlot("landscape");await showTemplateSlot("portrait")};$$("[data-template]").forEach(b=>b.onclick=()=>{editingSlot=b.dataset.template;$("#templateInput").click()});$$("[data-remove-template]").forEach(b=>b.onclick=()=>{if(editingProfile){editingProfile[b.dataset.removeTemplate]=null;showTemplateSlot(b.dataset.removeTemplate)}});$("#templateInput").onchange=async e=>{if(e.target.files[0])await importTemplate(e.target.files[0],editingSlot);e.target.value=""};$("#importBtn").onclick=()=>{const p=profileById(activeProfileId);if(!p?.landscape||!p?.portrait){openSettings();toast("Upload both template orientations first.");return}$("#photoInput").click()};$("#photoInput").onchange=e=>{importPhotos(e.target.files);e.target.value=""};$("#selectAllBtn").onclick=()=>selectAction("all");$("#selectNoneBtn").onclick=()=>selectAction("none");$("#invertBtn").onclick=()=>selectAction("invert");$$("[data-select]").forEach(b=>b.onclick=()=>selectAction(b.dataset.select));$("#viewMode").onchange=render;$("#removeSelectedBtn").onclick=removeSelected;$("#clearWorkspaceBtn").onclick=clearWorkspace;$("#exportAllBtn").onclick=()=>beginExport(photos.map(p=>p.id));$("#exportSelectedBtn").onclick=()=>beginExport(selected().map(p=>p.id));$("#bulkEditBtn").onclick=openBulk;$("#applyBulkBtn").onclick=applyBulk;$("#bulkAutoFit").onclick=()=>{const ids=bulkIds;ids.forEach(id=>{const p=photoById(id);p.settings=autoFit(p.settings)});toast("Auto-fit values prepared; press Apply to commit.")};$("#applyEditBtn").onclick=applyEditor;$("#cancelEditBtn").onclick=cancelEditor;$("#rotateLeft").onclick=()=>rotate(-90);$("#rotateRight").onclick=()=>rotate(90);$("#autoFitBtn").onclick=()=>{editorDraft=autoFit(editorDraft);pushHistory();changed()};$("#centerBtn").onclick=()=>{editorDraft.x=0;editorDraft.y=0;pushHistory();changed()};$("#resetBtn").onclick=()=>{editorDraft=clone(editorStart);pushHistory();changed()};$("#undoBtn").onclick=()=>undoRedo(-1);$("#redoBtn").onclick=()=>undoRedo(1);["zoomControl","xControl","yControl","rotationControl"].forEach(id=>$("#"+id).oninput=updateEditorFromControl);$("#exportFormat").onchange=updateFilenamePreview;["namePrefix","nameSuffix","nameSeparator","nameStart","namePadding","includeOriginal"].forEach(id=>$("#"+id).oninput=updateFilenamePreview);$("#jpegQuality").oninput=e=>$("#qualityValue").textContent=Math.round(+e.target.value*100)+"%";$("#saveExportSettings").onclick=async()=>{exportPrefs={format:$("#exportFormat").value,quality:+$("#jpegQuality").value,prefix:$("#namePrefix").value,suffix:$("#nameSuffix").value,separator:$("#nameSeparator").value,start:+$("#nameStart").value,padding:Math.max(1,Math.min(8,+$("#namePadding").value)),includeOriginal:$("#includeOriginal").value};await setMeta("exportPrefs",exportPrefs);toast("Export preferences saved.")};$("#confirmFormat").onchange=e=>{exportPrefs.format=e.target.value};$("#startExportBtn").onclick=runExport;$("#cancelExportBtn").onclick=()=>{exportCancelled=true;$("#progressText").textContent="Cancelling pending work…"};$("#restoreBtn").onclick=restoreWorkspace;$("#startFreshBtn").onclick=freshWorkspace;$("#clearDataBtn").onclick=async()=>{if(!confirm("Delete all photographs, templates, and application settings from this browser?"))return;indexedDB.deleteDatabase(DB_NAME);localStorage.removeItem("wb-theme");location.reload()};
-document.addEventListener("keydown",e=>{if($("#editorModal").classList.contains("hidden"))return;if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="z"){e.preventDefault();undoRedo(e.shiftKey?1:-1)}else if(e.key==="Escape")cancelEditor()});
-const main=$("#photoGrid");main.addEventListener("dragover",e=>e.preventDefault());main.addEventListener("drop",e=>{e.preventDefault();const files=[...e.dataTransfer.files].filter(f=>f.type.startsWith("image/"));if(files.length)importPhotos(files)});document.addEventListener("dragover",e=>{if(e.dataTransfer?.types?.includes("Files"))e.preventDefault()});document.addEventListener("drop",e=>{if(e.target.closest("#photoGrid"))return;if(e.dataTransfer?.files?.length){e.preventDefault();importPhotos([...e.dataTransfer.files].filter(f=>f.type.startsWith("image/")))}})}
-window.addEventListener("beforeunload",()=>{if(db)saveWorkspace()});
-loadApp().then(wire).catch(e=>{console.error(e);$("#splash").innerHTML="<h2>Unable to open application storage</h2><p>Please use a modern browser with IndexedDB enabled.</p>"});
-if("serviceWorker"in navigator&&location.protocol!=="file:")window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(console.warn));
-})();
-
-
-const OFFICIAL_TEMPLATES = {
-  landscape: "./landscape.png",
-  portrait: "./portrait.png"
-};
-
-const templateCache = {};
-
-async function preloadOfficialTemplates() {
-  for (const [orientation, src] of Object.entries(OFFICIAL_TEMPLATES)) {
-    const img = new Image();
-
-    await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = reject;
-      img.src = src;
-    });
-
-    templateCache[orientation] = img;
-  }
-}
-
-function getOfficialTemplate(width, height) {
-  return width > height
-    ? templateCache.landscape
-    : templateCache.portrait;
-}
+function syncControls(){const s=editorDraft;$("#zoomControl").value=s.zoom;$("#xControl").value=s.x;$("#yControl").value=s.y;$("#rotationControl").value=s.rotation;$("#zoomOutput").textCo
