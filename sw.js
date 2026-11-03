@@ -1,4 +1,4 @@
-const CACHE_NAME = "wbnhs-bsp-shell-v4";
+const CACHE_NAME = "wbnhs-bsp-shell-v5";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -8,7 +8,9 @@ const APP_SHELL = [
   "./icon.svg",
   "./logo.jpg",
   "./icon-192.png",
-  "./icon-512.png"
+  "./icon-512.png",
+  "./templates/default-landscape.png",
+  "./templates/default-portrait.png"
 ];
 
 self.addEventListener("install", event => {
